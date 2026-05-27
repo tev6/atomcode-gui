@@ -8,6 +8,8 @@
 
 **AtomCode GUI** 是一个基于 Electron 的桌面前端，为 [atomcode](https://crates.io/crates/atomcode) CLI 工具提供原生聊天界面。它将 agent 的 stdin/stdout 流包装成干净的对话式 UI，支持实时流式输出、工具调用可视化和完整的 Markdown 渲染。
 
+https://github.com/user-attachments/assets/2f99ee54-383e-4d8e-b015-101539b0b738
+
 ### 为什么？
 
 `atomcode` CLI 的输出很丰富 —— 思考过程、工具调用轨迹、流式文本 —— 但在纯终端中消费会丢失所有结构信息。AtomCode GUI 让这些信息变得清晰可见：
