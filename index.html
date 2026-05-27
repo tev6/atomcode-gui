@@ -38,10 +38,123 @@
     /* ─── Layout ──────────────────────────────────────── */
     #app {
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       height: 100vh;
-      max-width: 900px;
-      margin: 0 auto;
+    }
+
+    #sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: var(--surface-2);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    #sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    #sidebar-header h3 {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    #new-session-btn {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+
+    #new-session-btn:hover {
+      background: var(--accent-hover);
+    }
+
+    #session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 0;
+    }
+
+    #session-list::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #session-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #session-list::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .session-item {
+      padding: 10px 14px;
+      cursor: pointer;
+      border-radius: 6px;
+      margin: 2px 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+
+    .session-item:hover {
+      background: var(--surface);
+    }
+
+    .session-item.active {
+      background: var(--surface);
+    }
+
+    .session-item .session-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-delete {
+      opacity: 0;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: opacity 0.15s, color 0.15s;
+    }
+
+    .session-item:hover .session-delete {
+      opacity: 1;
+    }
+
+    .session-delete:hover {
+      color: var(--error);
+    }
+
+    #main-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
     }
 
     header {
@@ -488,60 +601,72 @@
 </head>
 <body>
   <div id="app">
-    <!-- Header -->
-    <header>
-      <div class="logo">A</div>
-      <h1>AtomCode</h1>
-      <button id="settings-toggle" title="设置">⚙️</button>
-      <span class="subtitle">100% AI 开发</span>
-    </header>
-
-    <!-- Settings -->
-    <div id="settings-panel">
-      <div class="settings-row">
-        <label>状态</label>
-        <span id="atomcode-status" style="color: var(--success); font-size: 13px;">检查中...</span>
+    <!-- Sidebar -->
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <h3>对话</h3>
+        <button id="new-session-btn">+</button>
       </div>
-      <div class="settings-row">
-        <label>路径</label>
-        <span id="atomcode-path" style="color: var(--text-dim); font-size: 12px;"></span>
-      </div>
-      <div class="settings-row">
-        <label>工作目录</label>
-        <input type="text" id="cwd-input" />
-      </div>
+      <div id="session-list"></div>
     </div>
 
-    <!-- Chat -->
-    <div id="chat-container">
-      <div id="welcome">
-        <div class="big-icon">A</div>
-        <h2>AtomCode GUI</h2>
-        <p>100% AI 开发的开源桌面客户端<br/>通过本地 atomcode 引擎驱动</p>
-      </div>
-    </div>
+    <!-- Main Area -->
+    <div id="main-area">
+      <!-- Header -->
+      <header>
+        <div class="logo">A</div>
+        <h1>AtomCode</h1>
+        <button id="settings-toggle" title="设置">⚙️</button>
+        <span class="subtitle">100% AI 开发</span>
+      </header>
 
-    <!-- Input -->
-    <div id="input-area">
-      <div id="input-row">
-        <textarea
-          id="message-input"
-          rows="1"
-          placeholder="输入消息..."
-          autofocus
-        ></textarea>
-        <button id="send-btn" disabled>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-          </svg>
-        </button>
+      <!-- Settings -->
+      <div id="settings-panel">
+        <div class="settings-row">
+          <label>状态</label>
+          <span id="atomcode-status" style="color: var(--success); font-size: 13px;">检查中...</span>
+        </div>
+        <div class="settings-row">
+          <label>路径</label>
+          <span id="atomcode-path" style="color: var(--text-dim); font-size: 12px;"></span>
+        </div>
+        <div class="settings-row">
+          <label>工作目录</label>
+          <input type="text" id="cwd-input" />
+        </div>
       </div>
-    </div>
 
-    <!-- Status bar -->
-    <div class="status-bar">
-      <span class="status-dot"></span>
-      <span id="status-text">就绪</span>
+      <!-- Chat -->
+      <div id="chat-container">
+        <div id="welcome">
+          <div class="big-icon">A</div>
+          <h2>AtomCode GUI</h2>
+          <p>100% AI 开发的开源桌面客户端<br/>通过本地 atomcode 引擎驱动</p>
+        </div>
+      </div>
+
+      <!-- Input -->
+      <div id="input-area">
+        <div id="input-row">
+          <textarea
+            id="message-input"
+            rows="1"
+            placeholder="输入消息..."
+            autofocus
+          ></textarea>
+          <button id="send-btn" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Status bar -->
+      <div class="status-bar">
+        <span class="status-dot"></span>
+        <span id="status-text">就绪</span>
+      </div>
     </div>
   </div>
 

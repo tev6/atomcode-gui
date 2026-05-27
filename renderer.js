@@ -11,9 +11,13 @@ const settingsPanel = document.getElementById('settings-panel');
 const cwdInput = document.getElementById('cwd-input');
 const atomcodeStatus = document.getElementById('atomcode-status');
 const atomcodePathEl = document.getElementById('atomcode-path');
+const sessionList = document.getElementById('session-list');
+const newSessionBtn = document.getElementById('new-session-btn');
 
 // ─── State ─────────────────────────────────────────────
 const state = {
+  sessions: [],
+  activeSessionId: null,
   messages: [],
   isLoading: false,
   currentSessionId: null,
@@ -27,6 +31,172 @@ let currentText = '';
 let currentThinkingEl = null;
 let unlisten = null;
 let hasToolCalls = false; // 当前会话是否有工具调用
+
+// ─── 会话管理 ──────────────────────────────────
+
+function sessionsLoad() {
+  try {
+    const data = localStorage.getItem('atomcode_sessions');
+    state.sessions = data ? JSON.parse(data) : [];
+  } catch {
+    state.sessions = [];
+  }
+}
+
+function sessionsSave() {
+  localStorage.setItem('atomcode_sessions', JSON.stringify(state.sessions));
+}
+
+function activeSessionIdLoad() {
+  try {
+    const id = localStorage.getItem('atomcode_active_session');
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+function activeSessionIdSave(id) {
+  if (id) {
+    localStorage.setItem('atomcode_active_session', id);
+  } else {
+    localStorage.removeItem('atomcode_active_session');
+  }
+}
+
+function sessionCreate() {
+  const session = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    title: '新对话',
+    messages: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.messages = [];
+  activeSessionIdSave(session.id);
+  sessionsSave();
+  renderSessionList();
+  clearChatUI();
+  welcome.classList.remove('hidden');
+  return session;
+}
+
+function sessionDelete(id) {
+  const idx = state.sessions.findIndex(s => s.id === id);
+  if (idx === -1) return;
+  state.sessions.splice(idx, 1);
+
+  if (state.activeSessionId === id) {
+    // 如果删除的是当前会话，切换到另一个会话或创建新会话
+    if (state.sessions.length > 0) {
+      sessionSwitch(state.sessions[0].id);
+    } else {
+      sessionCreate();
+    }
+  } else {
+    sessionsSave();
+    renderSessionList();
+  }
+}
+
+function sessionSwitch(id) {
+  // 保存当前会话消息
+  sessionSaveCurrent();
+  // 切换到目标会话
+  const session = state.sessions.find(s => s.id === id);
+  if (!session) return;
+  state.activeSessionId = id;
+  state.messages = session.messages;
+  activeSessionIdSave(id);
+  renderMessages(state.messages);
+  renderSessionList();
+}
+
+function sessionSaveCurrent() {
+  const session = state.sessions.find(s => s.id === state.activeSessionId);
+  if (!session) return;
+  session.messages = state.messages;
+  session.updatedAt = Date.now();
+
+  // 自动从第一条用户消息生成标题
+  if (session.title === '新对话') {
+    sessionUpdateTitle(session.id);
+  }
+
+  sessionsSave();
+}
+
+function sessionUpdateTitle(sessionId) {
+  const session = state.sessions.find(s => s.id === sessionId);
+  if (!session) return;
+  const firstUserMsg = session.messages.find(m => m.role === 'user');
+  if (firstUserMsg && firstUserMsg.content) {
+    session.title = firstUserMsg.content.substring(0, 30);
+  }
+}
+
+function renderSessionList() {
+  sessionList.innerHTML = '';
+  state.sessions.forEach(session => {
+    const item = document.createElement('div');
+    item.className = 'session-item';
+    if (session.id === state.activeSessionId) {
+      item.classList.add('active');
+    }
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'session-title';
+    titleSpan.textContent = session.title;
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'session-delete';
+    delBtn.textContent = '✕';
+    delBtn.title = '删除会话';
+
+    item.appendChild(titleSpan);
+    item.appendChild(delBtn);
+
+    item.addEventListener('click', (e) => {
+      if (e.target === delBtn) return;
+      if (session.id !== state.activeSessionId) {
+        sessionSwitch(session.id);
+      }
+    });
+
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sessionDelete(session.id);
+    });
+
+    sessionList.appendChild(item);
+  });
+}
+
+function clearChatUI() {
+  const msgs = chatContainer.querySelectorAll('.msg, .tool-call, .tool-result');
+  msgs.forEach(el => el.remove());
+  welcome.classList.add('hidden');
+}
+
+function renderMessages(messages) {
+  clearChatUI();
+  if (messages.length === 0) {
+    welcome.classList.remove('hidden');
+    return;
+  }
+  messages.forEach(msg => {
+    if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system') {
+      addMessage(msg.role, msg.content);
+    }
+  });
+}
+
+// ─── 新会话按钮 ─────────────────────────────────
+newSessionBtn.addEventListener('click', () => {
+  sessionCreate();
+});
 
 // ─── 检查 atomcode ──────────────────────────────
 async function checkAtomcode() {
@@ -92,6 +262,11 @@ async function sendMessage() {
   const text = messageInput.value.trim();
   if (!text || state.isLoading) return;
 
+  // 如果没有活跃会话，先创建一个
+  if (!state.activeSessionId) {
+    sessionCreate();
+  }
+
   if (!state.atomcodeAvailable) {
     addMessage('system', '⚠️ atomcode 未安装。请先运行: `cargo install atomcode`');
     return;
@@ -112,7 +287,7 @@ async function sendMessage() {
   welcome.classList.add('hidden');
 
   state.isLoading = true;
-  state.currentSessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  state.currentSessionId = state.activeSessionId;
 
   try {
     await window.atomcode.query({
@@ -180,6 +355,8 @@ function setupEventListener() {
       case 'done':
         state.messages.push({ role: 'assistant', content: currentText });
         setStatus(`完成 (${event.duration}s, ${event.turns} 轮, ${event.toolCalls} 工具调用)`);
+        sessionSaveCurrent();
+        renderSessionList();
         resetSession();
         break;
 
@@ -188,6 +365,8 @@ function setupEventListener() {
           if (currentText.trim()) {
             state.messages.push({ role: 'assistant', content: currentText });
           }
+          sessionSaveCurrent();
+          renderSessionList();
           resetSession();
         }
         break;
@@ -197,6 +376,8 @@ function setupEventListener() {
         if (currentText.trim()) {
           state.messages.push({ role: 'assistant', content: currentText });
         }
+        sessionSaveCurrent();
+        renderSessionList();
         resetSession();
         break;
     }
@@ -341,6 +522,8 @@ document.addEventListener('keydown', (e) => {
     if (currentText.trim()) {
       state.messages.push({ role: 'assistant', content: currentText });
     }
+    sessionSaveCurrent();
+    renderSessionList();
     resetSession();
     setStatus('已取消');
   }
@@ -351,6 +534,21 @@ async function init() {
   setupEventListener();
   await initCwd();
   await checkAtomcode();
+
+  // 初始化会话管理
+  sessionsLoad();
+  const savedActiveId = activeSessionIdLoad();
+  if (savedActiveId && state.sessions.some(s => s.id === savedActiveId)) {
+    state.activeSessionId = savedActiveId;
+    const session = state.sessions.find(s => s.id === savedActiveId);
+    state.messages = session.messages;
+    renderMessages(state.messages);
+  } else {
+    // 没有有效会话，创建一个新会话
+    sessionCreate();
+  }
+  renderSessionList();
+
   console.log('AtomCode GUI — 本地子进程模式');
   console.log(`Platform: ${window.atomcode.platform}`);
 }
