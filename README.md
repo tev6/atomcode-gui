@@ -8,6 +8,8 @@
 
 **AtomCode GUI** is an Electron-based desktop frontend for the [atomcode](https://crates.io/crates/atomcode) CLI tool. It wraps the agent's stdin/stdout stream into a clean, native chat interface with real-time streaming, tool-call visualization, and full Markdown rendering.
 
+https://github.com/user-attachments/assets/bf9054b1-dca4-4962-871c-a2106cfddeeb
+
 ### Why?
 
 The `atomcode` CLI produces rich output — thinking traces, tool invocations, streaming text — but consuming it in a raw terminal hides the structure. AtomCode GUI brings it to life:
