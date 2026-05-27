@@ -19,7 +19,7 @@ AtomCode GUI 是一款 **基于 Electron** 的桌面客户端，通过 **IPC 桥
 | `renderer.js` | **渲染进程** | ~367 行 | Vanilla JS / `markdown-it` |
 | `index.html` | **UI 结构** | ~551 行 | HTML5 / CSS3 暗色主题 |
 | `package.json` | **项目配置** | — | npm / Electron 42.x |
-| `assets/icon.svg` | **应用图标** | — | SVG |
+
 
 ### 1.2 依赖关系图
 

@@ -2,8 +2,6 @@
 
 > **atomcode AI 编码助手的极简桌面客户端 —— 100% 由 AI 构建。**
 
-![AtomCode GUI](assets/icon.svg)
-
 ---
 
 ## 概述
@@ -71,8 +69,6 @@ atomcode-gui/
 ├── preload.js       # 上下文桥接（向渲染进程暴露安全 API）
 ├── renderer.js      # UI 逻辑（流式渲染、事件处理、DOM 管理）
 ├── index.html       # 布局 & CSS 变量（暗色主题）
-├── assets/
-│   └── icon.svg     # 应用图标（紫色 'A'）
 ├── package.json
 ├── LICENSE
 ├── README.md

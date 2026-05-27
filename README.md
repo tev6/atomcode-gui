@@ -2,8 +2,6 @@
 
 > **A minimalist desktop client for the `atomcode` AI coding agent — 100% built by AI.**
 
-![AtomCode GUI](assets/icon.svg)
-
 ---
 
 ## Overview
@@ -71,8 +69,6 @@ atomcode-gui/
 ├── preload.js       # Context bridge (exposes safe APIs to renderer)
 ├── renderer.js      # UI logic (streaming, events, DOM management)
 ├── index.html       # Layout & CSS variables (dark theme)
-├── assets/
-│   └── icon.svg     # App icon (purple 'A')
 ├── package.json
 ├── LICENSE
 └── README.md
