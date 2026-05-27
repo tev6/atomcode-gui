@@ -1,0 +1,24 @@
+{
+  "name": "atomcode-gui",
+  "version": "0.1.0",
+  "description": "AtomCode GUI - 100% AI-developed open-source desktop client",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "atomcode",
+    "ai",
+    "coding",
+    "agent"
+  ],
+  "author": "AtomGit",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^42.3.0"
+  },
+  "dependencies": {
+    "markdown-it": "^14.2.0"
+  }
+}
