@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/2f99ee54-383e-4d8e-b015-101539b0b738
 | ⚡ **实时流式** | AI 文本逐字符到达，无内容闪烁 |
 | 🔧 **工具调用透明** | 查看每次 `read_file`、`grep`、`bash` 调用及其结果 |
 | 💬 **对话历史** | 多轮对话，上下文在会话中持续累积 |
-| 🌗 **暗色主题** | 现代化暗色 UI，护眼 |
+| 🌗 **深浅主题** | 浅色/深色模式一键切换，护眼舒适 |
 | 📝 **完整 Markdown** | 通过 `markdown-it` 渲染 —— 表格、代码、列表、标题 |
 | ⚙️ **设置面板** | 检查 atomcode 状态，设置工作目录 |
 | 🚀 **轻量级** | 单窗口，无打包器，无框架 —— 只有 Electron + 原生 JS |
@@ -70,7 +70,7 @@ atomcode-gui/
 ├── main.js          # Electron 主进程（窗口、IPC、daemon 进程管理、SSE）
 ├── preload.js       # 上下文桥接（向渲染进程暴露安全 API）
 ├── renderer.js      # UI 逻辑（流式渲染、事件处理、DOM 管理）
-├── index.html       # 布局 & CSS 变量（暗色主题）
+├── index.html       # 布局 & CSS 变量（浅色/深色主题）
 ├── package.json
 ├── LICENSE
 ├── README.md

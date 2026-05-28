@@ -28,7 +28,7 @@ The `atomcode` CLI produces rich output — thinking traces, tool invocations, s
 | ⚡ **Real-time streaming** | AI text arrives character-by-character; no flash-of-content |
 | 🔧 **Tool call transparency** | See every `read_file`, `grep`, `bash` call and its result |
 | 💬 **Conversation history** | Multi-turn chat, context accumulated over the session |
-| 🌗 **Dark theme** | Modern dark UI, easy on the eyes |
+| 🌗 **Light/dark theme** | Toggle between light and dark modes, easy on the eyes |
 | 📝 **Full Markdown** | Rendered via `markdown-it` — tables, code, lists, headings |
 | ⚙️ **Settings panel** | Check atomcode status, set working directory |
 | 🚀 **Lightweight** | Single window, no bundler, no framework — just Electron + vanilla JS |
@@ -71,7 +71,7 @@ atomcode-gui/
 ├── main.js          # Electron main process (window, IPC, daemon process management, SSE)
 ├── preload.js       # Context bridge (exposes safe APIs to renderer)
 ├── renderer.js      # UI logic (streaming, events, DOM management)
-├── index.html       # Layout & CSS variables (dark theme)
+├── index.html       # Layout & CSS variables (light/dark theme)
 ├── package.json
 ├── LICENSE
 └── README.md
