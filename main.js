@@ -221,22 +221,32 @@ function daemonRequest(method, urlPath, body) {
 // activeChats: clientSessionId → { httpReq, daemonSessionId }
 let activeChats = new Map();
 
-function startChatStream(clientSessionId, message, cwd, sendEvent) {
-  const body = JSON.stringify({
+function startChatStream(clientSessionId, message, cwd, provider, mode, sendEvent) {
+  const bodyObj = {
     message,
     working_dir: cwd || app.getPath('home'),
-  });
+  };
+  if (provider) bodyObj.provider = provider;
+
+  const body = JSON.stringify(bodyObj);
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body),
+    Accept: 'text/event-stream',
+  };
+
+  // 传递客户端模式头
+  if (mode) {
+    headers['X-AtomCode-Client'] = mode;
+  }
 
   const opts = {
     hostname: DAEMON_HOST,
     port: DAEMON_PORT,
     path: '/chat',
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body),
-      Accept: 'text/event-stream',
-    },
+    headers,
   };
 
   const req = http.request(opts, (res) => {
@@ -447,7 +457,7 @@ ipcMain.handle('atomcode:query', async (event, { sessionId, message, cwd }) => {
     }
   }
 
-  startChatStream(sessionId, message, cwd, (data) => {
+  startChatStream(sessionId, message, cwd, null, null, (data) => {
     sendToRenderer(data);
   });
 
@@ -519,6 +529,67 @@ ipcMain.handle('atomcode:listProviders', async () => {
   } catch {
     return { providers: [], default_provider: '' };
   }
+});
+
+/** 创建 Provider */
+ipcMain.handle('atomcode:createProvider', async (_event, provider) => {
+  try {
+    return await daemonRequest('POST', '/providers', provider);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/** 更新 Provider */
+ipcMain.handle('atomcode:patchProvider', async (_event, { name, patch }) => {
+  try {
+    return await daemonRequest('PATCH', `/providers/${encodeURIComponent(name)}`, patch);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/** 删除 Provider */
+ipcMain.handle('atomcode:deleteProvider', async (_event, name) => {
+  try {
+    return await daemonRequest('DELETE', `/providers/${encodeURIComponent(name)}`);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/** 设为默认 Provider */
+ipcMain.handle('atomcode:setDefaultProvider', async (_event, name) => {
+  try {
+    return await daemonRequest('POST', `/providers/${encodeURIComponent(name)}/default`);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/** 获取配置 */
+ipcMain.handle('atomcode:getConfig', async () => {
+  try {
+    return await daemonRequest('GET', '/config');
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/** 发送消息（带额外选项：provider, mode 等） */
+ipcMain.handle('atomcode:queryWithOptions', async (event, { sessionId, message, cwd, provider, mode }) => {
+  if (!daemonRunning) {
+    const ok = await startDaemon();
+    if (!ok) {
+      throw new Error('AtomCode daemon 未运行，请确认 atomcode 已安装');
+    }
+  }
+
+  startChatStream(sessionId, message, cwd, provider, mode, (data) => {
+    sendToRenderer(data);
+  });
+
+  return { sessionId };
 });
 
 /** 获取项目状态（当前工作目录等） */

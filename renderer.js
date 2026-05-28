@@ -13,6 +13,23 @@ const atomcodeStatus = document.getElementById('atomcode-status');
 const atomcodePathEl = document.getElementById('atomcode-path');
 const sessionList = document.getElementById('session-list');
 const newSessionBtn = document.getElementById('new-session-btn');
+const modelSelect = document.getElementById('model-select');
+const manageProvidersBtn = document.getElementById('manage-providers-btn');
+const configPathDisplay = document.getElementById('config-path-display');
+const versionDisplay = document.getElementById('version-display');
+
+// ─── Provider Modal Elements ───────────────────
+const providerModal = document.getElementById('provider-modal');
+const providersList = document.getElementById('providers-list');
+const providerForm = document.getElementById('provider-form');
+const providerFormTitle = document.getElementById('provider-form-title');
+const pfName = document.getElementById('pf-name');
+const pfType = document.getElementById('pf-type');
+const pfApiKey = document.getElementById('pf-api-key');
+const pfBaseUrl = document.getElementById('pf-base-url');
+const pfSave = document.getElementById('pf-save');
+const pfCancel = document.getElementById('pf-cancel');
+const providersModalClose = document.getElementById('providers-modal-close');
 
 // ─── State ─────────────────────────────────────────────
 const state = {
@@ -25,6 +42,11 @@ const state = {
   daemonRunning: false,
   cwd: '',
   projects: {},        // projectHash → session list cache
+  currentMode: 'build',  // 'build' | 'plan'
+  selectedProvider: '',   // provider name for chat
+  models: [],
+  providers: [],
+  defaultProvider: '',
 };
 
 // AI 回复流式累积
@@ -353,33 +375,209 @@ async function sessionRenameSync(session) {
 
 // ─── 模型 & 提供商加载 ────────────────────────
 async function loadModelsProviders() {
+  // 加载模型列表
   try {
     const models = await window.atomcode.listModels();
+    state.models = Array.isArray(models) ? models : [];
     const modelsEl = document.getElementById('models-display');
     if (modelsEl) {
-      modelsEl.textContent = Array.isArray(models) && models.length > 0
-        ? models.map(m => {
+      modelsEl.textContent = state.models.length > 0
+        ? state.models.map(m => {
             if (typeof m === 'string') return m;
             if (m && typeof m === 'object') return m.name || m.id || m.model || JSON.stringify(m);
             return String(m);
           }).join(', ')
         : '（无）';
     }
-  } catch { document.getElementById('models-display').textContent = '加载失败'; }
+
+    // 填充模型下拉框
+    modelSelect.innerHTML = '<option value="">默认模型</option>';
+    if (state.models.length > 0) {
+      for (const m of state.models) {
+        const name = (typeof m === 'string') ? m : (m.name || m.id || m.model || '');
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        modelSelect.appendChild(option);
+      }
+    }
+  } catch {
+    document.getElementById('models-display').textContent = '加载失败';
+  }
+
+  // 加载 Provider 列表
   try {
     const providers = await window.atomcode.listProviders();
+    const list = providers.providers || providers;
+    state.providers = Array.isArray(list) ? list : [];
+    state.defaultProvider = providers.default_provider || '';
+
     const providersEl = document.getElementById('providers-display');
     if (providersEl) {
-      const list = providers.providers || providers;
-      providersEl.textContent = Array.isArray(list) && list.length > 0
-        ? list.map(p => {
+      providersEl.textContent = state.providers.length > 0
+        ? state.providers.map(p => {
             if (typeof p === 'string') return p;
             if (p && typeof p === 'object') return p.name || p.id || JSON.stringify(p);
             return String(p);
           }).join(', ')
         : '（无）';
     }
-  } catch { document.getElementById('providers-display').textContent = '加载失败'; }
+
+    // 如果有默认 provider，选中它
+    if (state.defaultProvider && !state.selectedProvider) {
+      state.selectedProvider = state.defaultProvider;
+    }
+  } catch {
+    document.getElementById('providers-display').textContent = '加载失败';
+  }
+}
+
+// ─── Provider 管理 ────────────────────────────
+let editingProviderName = null; // null = 新增, string = 编辑
+
+async function openProviderModal() {
+  editingProviderName = null;
+  providerForm.style.display = 'none';
+  providersList.innerHTML = '<p style="color: var(--text-dim);">加载中...</p>';
+  providerModal.style.display = 'flex';
+  await renderProviders();
+}
+
+function closeProviderModal() {
+  providerModal.style.display = 'none';
+  editingProviderName = null;
+  providerForm.style.display = 'none';
+  providerFormTitle.textContent = '新增 Provider';
+  pfName.value = '';
+  pfType.value = 'openai';
+  pfApiKey.value = '';
+  pfBaseUrl.value = '';
+  pfName.disabled = false;
+}
+
+async function renderProviders() {
+  try {
+    const providers = await window.atomcode.listProviders();
+    const list = providers.providers || providers;
+    state.providers = Array.isArray(list) ? list : [];
+    state.defaultProvider = providers.default_provider || '';
+
+    if (state.providers.length === 0) {
+      providersList.innerHTML = `<div style="text-align:center;padding:20px;">
+        <p style="color:var(--text-dim);margin:0 0 12px 0;">暂无 Provider</p>
+        <button class="add-provider-btn" id="show-add-provider-btn">+ 新增 Provider</button>
+      </div>`;
+      const addBtn = document.getElementById('show-add-provider-btn');
+      if (addBtn) addBtn.addEventListener('click', showAddProviderForm);
+      return;
+    }
+
+    let html = '<button class="add-provider-btn" id="show-add-provider-btn">+ 新增 Provider</button>';
+    for (const p of state.providers) {
+      const name = p.name || p.id || '?';
+      const ptype = p.provider_type || p.type || '';
+      const isDefault = name === state.defaultProvider;
+      html += `<div class="provider-item">
+        <div class="info">
+          <div class="name">${escapeHtml(name)} ${isDefault ? '⭐' : ''}</div>
+          <div class="detail">${escapeHtml(ptype)}${isDefault ? ' · 默认' : ''}</div>
+        </div>
+        <div class="actions">
+          <button class="btn-edit" data-name="${escapeHtml(name)}">编辑</button>
+          ${isDefault ? '' : `<button class="btn-default" data-name="${escapeHtml(name)}">设为默认</button>`}
+          <button class="btn-danger btn-delete" data-name="${escapeHtml(name)}">删除</button>
+        </div>
+      </div>`;
+    }
+    providersList.innerHTML = html;
+
+    // 绑定事件
+    const addBtn = document.getElementById('show-add-provider-btn');
+    if (addBtn) addBtn.addEventListener('click', showAddProviderForm);
+
+    providersList.querySelectorAll('.btn-edit').forEach(btn => {
+      btn.addEventListener('click', () => editProvider(btn.dataset.name));
+    });
+    providersList.querySelectorAll('.btn-default').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await window.atomcode.setDefaultProvider(btn.dataset.name);
+        await renderProviders();
+        await loadModelsProviders();
+      });
+    });
+    providersList.querySelectorAll('.btn-delete').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm(`确定删除 Provider "${btn.dataset.name}"？`)) return;
+        await window.atomcode.deleteProvider(btn.dataset.name);
+        await renderProviders();
+        await loadModelsProviders();
+      });
+    });
+  } catch (err) {
+    providersList.innerHTML = `<p style="color:var(--error);">加载失败: ${err.message}</p>`;
+  }
+}
+
+function showAddProviderForm() {
+  editingProviderName = null;
+  providerFormTitle.textContent = '新增 Provider';
+  pfName.value = '';
+  pfType.value = 'openai';
+  pfApiKey.value = '';
+  pfBaseUrl.value = '';
+  pfName.disabled = false;
+  providerForm.style.display = 'block';
+}
+
+function editProvider(name) {
+  editingProviderName = name;
+  providerFormTitle.textContent = `编辑 Provider: ${name}`;
+  pfName.value = name;
+  pfName.disabled = true; // 编辑时不能改名
+
+  // 查找现有 provider 预填表单
+  const p = state.providers.find(x => x.name === name || x.id === name);
+  pfType.value = (p && (p.provider_type || p.type)) || 'openai';
+  pfApiKey.value = '';
+  pfBaseUrl.value = (p && (p.base_url || '')) || '';
+  providerForm.style.display = 'block';
+}
+
+async function saveProvider() {
+  const name = pfName.value.trim();
+  const ptype = pfType.value;
+  const apiKey = pfApiKey.value.trim();
+  const baseUrl = pfBaseUrl.value.trim();
+
+  if (!name) {
+    alert('请输入 Provider 名称');
+    return;
+  }
+
+  const body = {
+    name,
+    provider_type: ptype,
+  };
+  if (apiKey) body.api_key = apiKey;
+  if (baseUrl) body.base_url = baseUrl;
+
+  try {
+    if (editingProviderName) {
+      // 编辑
+      const patch = {};
+      if (apiKey) patch.api_key = apiKey;
+      if (baseUrl) patch.base_url = baseUrl;
+      await window.atomcode.patchProvider(editingProviderName, patch);
+    } else {
+      // 新增
+      await window.atomcode.createProvider(body);
+    }
+
+    closeProviderModal();
+    await loadModelsProviders();
+  } catch (err) {
+    alert(`保存失败: ${err.message}`);
+  }
 }
 
 function clearChatUI() {
@@ -419,6 +617,7 @@ async function checkAtomcode() {
       setStatus('就绪');
       sendBtn.disabled = false;
       loadModelsProviders();
+      loadConfigInfo();
     } else if (result.available) {
       atomcodeStatus.textContent = '⏳ Daemon 启动中…';
       atomcodeStatus.style.color = 'var(--warning)';
@@ -548,6 +747,35 @@ messageInput.addEventListener('keydown', (e) => {
   }
 });
 
+// ─── 模式切换 ─────────────────────────────────────
+document.addEventListener('click', (e) => {
+  const modeOption = e.target.closest('.mode-option');
+  if (!modeOption) return;
+
+  const mode = modeOption.dataset.mode;
+  if (!mode || mode === state.currentMode) return;
+
+  state.currentMode = mode;
+  document.querySelectorAll('.mode-option').forEach(el => {
+    el.classList.toggle('active', el.dataset.mode === mode);
+  });
+  setStatus(`模式: ${mode === 'build' ? 'Build（完整执行）' : 'Plan（只读探索）'}`);
+});
+
+// ─── 模型选择 ─────────────────────────────────────
+modelSelect.addEventListener('change', () => {
+  state.selectedProvider = modelSelect.value;
+});
+
+// ─── Provider 管理 ─────────────────────────────
+manageProvidersBtn.addEventListener('click', openProviderModal);
+providersModalClose.addEventListener('click', closeProviderModal);
+pfCancel.addEventListener('click', closeProviderModal);
+pfSave.addEventListener('click', saveProvider);
+providerModal.addEventListener('click', (e) => {
+  if (e.target === providerModal) closeProviderModal();
+});
+
 async function sendMessage() {
   const text = messageInput.value.trim();
   if (!text || state.isLoading) return;
@@ -585,10 +813,17 @@ async function sendMessage() {
   state.currentSessionId = state.activeSessionId;
 
   try {
-    await window.atomcode.query({
+    // 确定发送哪个 provider
+    const provider = modelSelect.value || state.selectedProvider || undefined;
+    // 确定工作模式
+    const mode = state.currentMode === 'plan' ? 'atomcode-air' : undefined;
+
+    await window.atomcode.queryWithOptions({
       sessionId: state.currentSessionId,
       message: text,
       cwd: state.cwd,
+      provider,
+      mode,
     });
   } catch (err) {
     removeTyping();
@@ -953,6 +1188,23 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ─── 初始化 ──────────────────────────────────────
+// ─── 加载配置信息 ────────────────────────────
+async function loadConfigInfo() {
+  try {
+    const config = await window.atomcode.getConfig();
+    if (config && config.settings_path) {
+      configPathDisplay.textContent = config.settings_path;
+    } else if (config && config.path) {
+      configPathDisplay.textContent = config.path;
+    }
+    if (config && config.version) {
+      versionDisplay.textContent = config.version;
+    }
+  } catch {
+    // 静默失败
+  }
+}
+
 async function init() {
   applyTheme();
   setupEventListener();

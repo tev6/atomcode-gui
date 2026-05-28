@@ -63,4 +63,22 @@ contextBridge.exposeInMainWorld('atomcode', {
 
   /** 修改工作目录 */
   changeDir: (dir) => ipcRenderer.invoke('atomcode:changeDir', dir),
+
+  // ─── Provider 管理 ──────────────────────────────
+  /** 创建 Provider */
+  createProvider: (provider) => ipcRenderer.invoke('atomcode:createProvider', provider),
+  /** 更新 Provider */
+  patchProvider: (name, patch) => ipcRenderer.invoke('atomcode:patchProvider', { name, patch }),
+  /** 删除 Provider */
+  deleteProvider: (name) => ipcRenderer.invoke('atomcode:deleteProvider', name),
+  /** 设为默认 Provider */
+  setDefaultProvider: (name) => ipcRenderer.invoke('atomcode:setDefaultProvider', name),
+
+  // ─── Config ─────────────────────────────────────
+  /** 获取配置 */
+  getConfig: () => ipcRenderer.invoke('atomcode:getConfig'),
+
+  // ─── 模式切换 ─────────────────────────────────
+  /** 发送消息时传额外参数（provider, mode 等） */
+  queryWithOptions: (params) => ipcRenderer.invoke('atomcode:queryWithOptions', params),
 });
