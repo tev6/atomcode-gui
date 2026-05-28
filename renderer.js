@@ -39,15 +39,24 @@ let hasToolCalls = false;
 async function loadSessionsFromDaemon() {
   try {
     const sessions = await window.atomcode.listSessions();
-    // 保留本地 pending 会话（daemon 不知道它们），合并新的 daemon 会话
-    const pending = state.sessions.filter(s => s._pending);
+    const daemonIds = new Set((sessions || []).map(s => s.id));
+    // 保留本地会话（daemon 可能在首次 chat 后还没持久化该会话）
+    const localOnly = state.sessions.filter(s => !daemonIds.has(s.id) && !daemonIds.has(s._serverId));
     const merged = (sessions || []).map(ds => {
-      // 如果已有同 ID 的本地会话（含消息缓存），保留之
-      const existing = state.sessions.find(s => s.id === ds.id);
-      return existing || ds;
+      // 优先匹配本地已有会话（通过 id 或 _serverId）
+      const existing = state.sessions.find(s => s.id === ds.id || s._serverId === ds.id);
+      if (existing) {
+        // 如果本地会话有 _serverId 且与 daemon ID 不同，说明首次 chat 已完成
+        // 用 daemon ID 更新本地 session 的主 ID
+        if (existing._serverId && existing.id !== ds.id) {
+          existing.id = ds.id;
+          delete existing._serverId;
+        }
+        return existing;
+      }
+      return ds;
     });
-    // 把 pending 会话加到最前面
-    state.sessions = [...pending, ...merged.filter(ds => !ds._pending)];
+    state.sessions = [...localOnly, ...merged];
     renderSessionList();
   } catch (err) {
     console.error('Failed to load sessions:', err);
@@ -292,17 +301,21 @@ function hideSessionContextMenu() {
 
 async function sessionRename(id) {
   const session = state.sessions.find(s => s.id === id);
-  if (!session) return;
-  const newName = prompt('输入新名称：', session.name);
-  if (!newName || newName === session.name) return;
-  session.name = newName;
+  if (!session) { console.warn('sessionRename: session not found', id); return; }
+  const newName = prompt('输入新名称：', session.name || '');
+  if (newName === null) return; // 用户取消
+  if (!newName.trim() || newName.trim() === (session.name || '')) return;
+  session.name = newName.trim();
+  // 同步到 daemon（如果不成功不影响本地改名）
   try {
     const allSessions = await window.atomcode.listSessions();
-    const found = allSessions.find(s => s.id === id);
+    const found = allSessions.find(s => s.id === id || s.id === session._serverId);
     if (found && found.project_hash) {
-      await window.atomcode.renameSession(found.project_hash, id, newName);
+      await window.atomcode.renameSession(found.project_hash, id, session.name);
     }
-  } catch {}
+  } catch (err) {
+    console.warn('sessionRename: daemon sync failed', err);
+  }
   renderSessionList();
 }
 
@@ -659,15 +672,15 @@ function setupEventListener() {
           state.messages.push({ role: 'assistant', content: currentText });
         }
 
-        // 更新 session 信息 — 关键：将本地 session ID 替换为 daemon session ID
-        // 这样 loadSessionsFromDaemon() 后 ID 能匹配上，不会悬空
+        // 更新 session 信息
         if (event.session_id) {
           const session = state.sessions.find(s => s.id === state.activeSessionId);
           if (session) {
             session._pending = false;
             session.name = session.name || '新对话';
-            // 替换为 daemon 的真实 session ID（仅在首次 chat 后）
-            if (session.id !== event.session_id) {
+            // 存储 daemon 的真实 session ID，但不覆盖本地 id
+            // 这样 loadSessionsFromDaemon 可以通过 _serverId 匹配
+            if (session.id !== event.session_id && !session._serverId) {
               // 迁移 localStorage 中的消息到新 ID
               const oldKey = `chat_msgs_${session.id}`;
               const oldData = localStorage.getItem(oldKey);
@@ -675,9 +688,9 @@ function setupEventListener() {
                 localStorage.setItem(`chat_msgs_${event.session_id}`, oldData);
                 localStorage.removeItem(oldKey);
               }
-              session.id = event.session_id;
-              state.activeSessionId = event.session_id;
-              activeSessionIdSave(event.session_id);
+              session._serverId = event.session_id;
+              // 更新 localStorage 中的 activeSessionId 为本地 id（保持不变）
+              activeSessionIdSave(session.id);
             }
           }
         }
