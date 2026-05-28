@@ -39,7 +39,15 @@ let hasToolCalls = false;
 async function loadSessionsFromDaemon() {
   try {
     const sessions = await window.atomcode.listSessions();
-    state.sessions = sessions || [];
+    // 保留本地 pending 会话（daemon 不知道它们），合并新的 daemon 会话
+    const pending = state.sessions.filter(s => s._pending);
+    const merged = (sessions || []).map(ds => {
+      // 如果已有同 ID 的本地会话（含消息缓存），保留之
+      const existing = state.sessions.find(s => s.id === ds.id);
+      return existing || ds;
+    });
+    // 把 pending 会话加到最前面
+    state.sessions = [...pending, ...merged.filter(ds => !ds._pending)];
     renderSessionList();
   } catch (err) {
     console.error('Failed to load sessions:', err);
@@ -127,8 +135,12 @@ async function sessionSwitch(id) {
   state.activeSessionId = id;
   activeSessionIdSave(id);
 
-  // 如果是 daemon 管理的会话，尝试加载详情
-  if (!session._pending) {
+  // 1) 优先从 localStorage 恢复（支持重启后恢复）
+  const localMsgs = loadMessagesLocally(id);
+  if (localMsgs) {
+    session.messages = localMsgs;
+  } else if (!session._pending) {
+    // 2) 非 pending 会话：尝试从 daemon 加载消息
     try {
       const allSessions = await window.atomcode.listSessions();
       const found = allSessions.find(s => s.id === id);
@@ -164,6 +176,7 @@ function sessionSaveCurrent() {
   if (!session) return;
   session.messages = state.messages;
   session.updated_at = Date.now();
+  saveMessagesLocally(session.id, state.messages);
   // 自动命名
   if (session.name === '新对话' || !session.name) {
     const firstUserMsg = state.messages.find(m => m.role === 'user');
@@ -171,6 +184,19 @@ function sessionSaveCurrent() {
       session.name = firstUserMsg.content.substring(0, 30);
     }
   }
+}
+
+// ─── 本地消息持久化 (localStorage) ─────────────
+function saveMessagesLocally(id, messages) {
+  try {
+    localStorage.setItem(`chat_msgs_${id}`, JSON.stringify(messages));
+  } catch {}
+}
+function loadMessagesLocally(id) {
+  try {
+    const raw = localStorage.getItem(`chat_msgs_${id}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 }
 
 function renderSessionList() {
@@ -186,28 +212,129 @@ function renderSessionList() {
     titleSpan.className = 'session-title';
     titleSpan.textContent = session.name || '新对话';
 
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'session-actions';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'session-rename';
+    renameBtn.textContent = '✎';
+    renameBtn.title = '重命名';
+
     const delBtn = document.createElement('button');
     delBtn.className = 'session-delete';
     delBtn.textContent = '✕';
     delBtn.title = '删除会话';
 
+    actionsDiv.appendChild(renameBtn);
+    actionsDiv.appendChild(delBtn);
+
     item.appendChild(titleSpan);
-    item.appendChild(delBtn);
+    item.appendChild(actionsDiv);
 
     item.addEventListener('click', (e) => {
-      if (e.target === delBtn) return;
+      if (e.target.closest('.session-actions')) return;
       if (session.id !== state.activeSessionId) {
         sessionSwitch(session.id);
       }
     });
 
+    // 右键菜单
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showSessionContextMenu(e.clientX, e.clientY, session);
+    });
+
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      sessionDelete(session.id);
+      if (confirm('确定删除此对话？')) {
+        sessionDelete(session.id);
+      }
+    });
+
+    renameBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sessionRename(session.id);
     });
 
     sessionList.appendChild(item);
   });
+}
+
+// ─── 会话右键菜单 ─────────────────────────────
+let contextMenuEl = null;
+function showSessionContextMenu(x, y, session) {
+  hideSessionContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'session-context-menu';
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+
+  const renameItem = document.createElement('div');
+  renameItem.className = 'ctx-item';
+  renameItem.textContent = '重命名';
+  renameItem.addEventListener('click', () => { hideSessionContextMenu(); sessionRename(session.id); });
+
+  const deleteItem = document.createElement('div');
+  deleteItem.className = 'ctx-item';
+  deleteItem.textContent = '删除';
+  deleteItem.addEventListener('click', () => { hideSessionContextMenu(); if (confirm('确定删除此对话？')) sessionDelete(session.id); });
+
+  menu.appendChild(renameItem);
+  menu.appendChild(deleteItem);
+  document.body.appendChild(menu);
+  contextMenuEl = menu;
+
+  setTimeout(() => document.addEventListener('click', hideSessionContextMenu, { once: true }), 0);
+}
+function hideSessionContextMenu() {
+  if (contextMenuEl) { contextMenuEl.remove(); contextMenuEl = null; }
+}
+
+async function sessionRename(id) {
+  const session = state.sessions.find(s => s.id === id);
+  if (!session) return;
+  const newName = prompt('输入新名称：', session.name);
+  if (!newName || newName === session.name) return;
+  session.name = newName;
+  try {
+    const allSessions = await window.atomcode.listSessions();
+    const found = allSessions.find(s => s.id === id);
+    if (found && found.project_hash) {
+      await window.atomcode.renameSession(found.project_hash, id, newName);
+    }
+  } catch {}
+  renderSessionList();
+}
+
+// ─── 模型 & 提供商加载 ────────────────────────
+async function loadModelsProviders() {
+  try {
+    const models = await window.atomcode.listModels();
+    const modelsEl = document.getElementById('models-display');
+    if (modelsEl) {
+      modelsEl.textContent = Array.isArray(models) && models.length > 0
+        ? models.map(m => {
+            if (typeof m === 'string') return m;
+            if (m && typeof m === 'object') return m.name || m.id || m.model || JSON.stringify(m);
+            return String(m);
+          }).join(', ')
+        : '（无）';
+    }
+  } catch { document.getElementById('models-display').textContent = '加载失败'; }
+  try {
+    const providers = await window.atomcode.listProviders();
+    const providersEl = document.getElementById('providers-display');
+    if (providersEl) {
+      const list = providers.providers || providers;
+      providersEl.textContent = Array.isArray(list) && list.length > 0
+        ? list.map(p => {
+            if (typeof p === 'string') return p;
+            if (p && typeof p === 'object') return p.name || p.id || JSON.stringify(p);
+            return String(p);
+          }).join(', ')
+        : '（无）';
+    }
+  } catch { document.getElementById('providers-display').textContent = '加载失败'; }
 }
 
 function clearChatUI() {
@@ -246,6 +373,7 @@ async function checkAtomcode() {
       atomcodePathEl.textContent = `127.0.0.1:${result.health ? '13456' : '?'}`;
       setStatus('就绪');
       sendBtn.disabled = false;
+      loadModelsProviders();
     } else if (result.available) {
       atomcodeStatus.textContent = '⏳ Daemon 启动中…';
       atomcodeStatus.style.color = 'var(--warning)';
@@ -531,12 +659,26 @@ function setupEventListener() {
           state.messages.push({ role: 'assistant', content: currentText });
         }
 
-        // 更新 session 信息
+        // 更新 session 信息 — 关键：将本地 session ID 替换为 daemon session ID
+        // 这样 loadSessionsFromDaemon() 后 ID 能匹配上，不会悬空
         if (event.session_id) {
           const session = state.sessions.find(s => s.id === state.activeSessionId);
           if (session) {
             session._pending = false;
             session.name = session.name || '新对话';
+            // 替换为 daemon 的真实 session ID（仅在首次 chat 后）
+            if (session.id !== event.session_id) {
+              // 迁移 localStorage 中的消息到新 ID
+              const oldKey = `chat_msgs_${session.id}`;
+              const oldData = localStorage.getItem(oldKey);
+              if (oldData) {
+                localStorage.setItem(`chat_msgs_${event.session_id}`, oldData);
+                localStorage.removeItem(oldKey);
+              }
+              session.id = event.session_id;
+              state.activeSessionId = event.session_id;
+              activeSessionIdSave(event.session_id);
+            }
           }
         }
 
@@ -756,9 +898,10 @@ async function init() {
   const savedActiveId = activeSessionIdLoad();
   if (savedActiveId && state.sessions.some(s => s.id === savedActiveId)) {
     state.activeSessionId = savedActiveId;
-    const session = state.sessions.find(s => s.id === savedActiveId);
-    if (session && session.messages) {
-      state.messages = session.messages;
+    // 从 localStorage 恢复消息（重启后可用）
+    const localMsgs = loadMessagesLocally(savedActiveId);
+    if (localMsgs) {
+      state.messages = localMsgs;
       renderMessages(state.messages);
     }
   } else {
