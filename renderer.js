@@ -220,6 +220,7 @@ function renderSessionList() {
     const titleSpan = document.createElement('span');
     titleSpan.className = 'session-title';
     titleSpan.textContent = session.name || '新对话';
+    titleSpan.dataset.sessionId = session.id;
 
     const actionsDiv = document.createElement('div');
     actionsDiv.className = 'session-actions';
@@ -262,7 +263,7 @@ function renderSessionList() {
 
     renameBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      sessionRename(session.id);
+      sessionRenameInline(session.id);
     });
 
     sessionList.appendChild(item);
@@ -281,7 +282,7 @@ function showSessionContextMenu(x, y, session) {
   const renameItem = document.createElement('div');
   renameItem.className = 'ctx-item';
   renameItem.textContent = '重命名';
-  renameItem.addEventListener('click', () => { hideSessionContextMenu(); sessionRename(session.id); });
+  renameItem.addEventListener('click', () => { hideSessionContextMenu(); sessionRenameInline(session.id); });
 
   const deleteItem = document.createElement('div');
   deleteItem.className = 'ctx-item';
@@ -299,24 +300,55 @@ function hideSessionContextMenu() {
   if (contextMenuEl) { contextMenuEl.remove(); contextMenuEl = null; }
 }
 
-async function sessionRename(id) {
+/** 行内重命名：将会话标题替换为输入框 */
+function sessionRenameInline(id) {
   const session = state.sessions.find(s => s.id === id);
-  if (!session) { console.warn('sessionRename: session not found', id); return; }
-  const newName = prompt('输入新名称：', session.name || '');
-  if (newName === null) return; // 用户取消
-  if (!newName.trim() || newName.trim() === (session.name || '')) return;
-  session.name = newName.trim();
-  // 同步到 daemon（如果不成功不影响本地改名）
+  if (!session) { console.warn('rename: session not found', id); return; }
+
+  const titleSpan = sessionList.querySelector(`.session-title[data-session-id="${id}"]`);
+  if (!titleSpan) { console.warn('rename: title element not found', id); return; }
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'session-rename-input';
+  input.value = session.name || '';
+  input.maxLength = 100;
+
+  // 用 input 替换 title
+  titleSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = (save) => {
+    if (save) {
+      const name = input.value.trim();
+      if (name && name !== (session.name || '')) {
+        session.name = name;
+        // 异步同步到 daemon（不阻塞、不影响本地）
+        sessionRenameSync(session).catch(() => {});
+      }
+    }
+    renderSessionList();
+  };
+
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { input.blur(); }
+    if (e.key === 'Escape') { finish(false); }
+  });
+}
+
+/** 异步同步重命名到 daemon */
+async function sessionRenameSync(session) {
   try {
     const allSessions = await window.atomcode.listSessions();
-    const found = allSessions.find(s => s.id === id || s.id === session._serverId);
+    const found = allSessions.find(s => s.id === session.id || s.id === session._serverId);
     if (found && found.project_hash) {
-      await window.atomcode.renameSession(found.project_hash, id, session.name);
+      await window.atomcode.renameSession(found.project_hash, session.id, session.name);
     }
   } catch (err) {
-    console.warn('sessionRename: daemon sync failed', err);
+    console.warn('rename sync failed', err);
   }
-  renderSessionList();
 }
 
 // ─── 模型 & 提供商加载 ────────────────────────
