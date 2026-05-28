@@ -38,10 +38,11 @@ The `atomcode` CLI produces rich output — thinking traces, tool invocations, s
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) >= 18
-- [atomcode](https://crates.io/crates/atomcode) CLI installed:
+- [atomcode](https://crates.io/crates/atomcode) CLI installed (daemon mode requires `atomcode-daemon`):
   ```bash
   cargo install atomcode
   ```
+  Make sure `atomcode-daemon` (shipped with `atomcode`) is discoverable in your `PATH`.
 
 ---
 
@@ -67,7 +68,7 @@ The GUI will check for the `atomcode` binary automatically. If found, you can st
 
 ```
 atomcode-gui/
-├── main.js          # Electron main process (window, IPC, child_process)
+├── main.js          # Electron main process (window, IPC, daemon process management, SSE)
 ├── preload.js       # Context bridge (exposes safe APIs to renderer)
 ├── renderer.js      # UI logic (streaming, events, DOM management)
 ├── index.html       # Layout & CSS variables (dark theme)
@@ -80,20 +81,21 @@ atomcode-gui/
 
 ## Architecture
 
-The app runs a child `atomcode` process with the full conversation as a `-p` prompt:
+The app communicates with the `atomcode-daemon` via SSE (Server-Sent Events) over HTTP:
 
 ```
 Renderer (renderer.js)
   │  IPC: atomcode:query
   ▼
 Main Process (main.js)
-  │  spawn('atomcode', ['-p', prompt, '-C', cwd, '--verbose'])
+  │  POST /chat (SSE)  ──► daemon (http://localhost:22728)
+  │  GET  /sessions
+  │  GET  /models
   │
-  ├── stdout → [response_chunk] (streaming AI text)
-  └── stderr → [thinking] [tool→] [tool←] [done] (structured metadata)
+  └── SSE stream events ──► IPC ──► Renderer
 ```
 
-The stderr stream is parsed line-by-line for structured events (`[thinking]`, `[tool→ name args=...]`, `[tool← name OK time]`, `[done]`), while stdout carries the raw AI response. Both streams are forwarded to the renderer via Electron IPC.
+The daemon runs as a background process, exposing an HTTP API. The main process POSTs to `/chat` to start a streaming conversation; the daemon responds with SSE events (`thinking`, `tool→`, `tool←`, `message_chunk`, `done`). These are forwarded to the renderer via Electron IPC. Additional endpoints (`/sessions`, `/models`, `/providers`) power the settings panel. If the daemon is not running, the GUI starts it automatically.
 
 ---
 
