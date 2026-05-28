@@ -516,6 +516,29 @@ settingsToggle.addEventListener('click', () => {
   settingsPanel.classList.toggle('open');
 });
 
+function applyTheme() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  const isLight = saved === 'light';
+  document.documentElement.classList.toggle('light', isLight);
+  const cb = document.getElementById('theme-toggle-checkbox');
+  if (cb) cb.checked = isLight;
+  const label = cb?.nextElementSibling;
+  if (label) label.textContent = isLight ? '浅色模式' : '深色模式';
+}
+
+function themeToggle() {
+  const isLight = document.documentElement.classList.toggle('light');
+  localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  const cb = document.getElementById('theme-toggle-checkbox');
+  if (cb) cb.checked = isLight;
+  const label = cb?.nextElementSibling;
+  if (label) label.textContent = isLight ? '浅色模式' : '深色模式';
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'theme-toggle-checkbox') themeToggle();
+});
+
 // ─── 发送消息 ─────────────────────────────────────
 sendBtn.addEventListener('click', sendMessage);
 messageInput.addEventListener('keydown', (e) => {
@@ -931,6 +954,7 @@ document.addEventListener('keydown', (e) => {
 
 // ─── 初始化 ──────────────────────────────────────
 async function init() {
+  applyTheme();
   setupEventListener();
   await initCwd();
   await checkAtomcode();
