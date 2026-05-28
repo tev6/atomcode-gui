@@ -1,5 +1,5 @@
-// ─── AtomCode GUI Renderer ────────────────────────────
-// 通过 Electron IPC 调用本地 atomcode 子进程
+// ─── AtomCode GUI Renderer（Daemon SSE 模式）───────
+// 通过 Electron IPC 连接 atomcode daemon
 
 const chatContainer = document.getElementById('chat-container');
 const welcome = document.getElementById('welcome');
@@ -16,13 +16,15 @@ const newSessionBtn = document.getElementById('new-session-btn');
 
 // ─── State ─────────────────────────────────────────────
 const state = {
-  sessions: [],
-  activeSessionId: null,
+  sessions: [],        // { id, name, created_at, updated_at, message_count }
+  activeSessionId: null, // daemon session UUID
   messages: [],
   isLoading: false,
-  currentSessionId: null,
+  currentSessionId: null, // 用于追踪 SSE 事件流
   atomcodeAvailable: false,
+  daemonRunning: false,
   cwd: '',
+  projects: {},        // projectHash → session list cache
 };
 
 // AI 回复流式累积
@@ -30,110 +32,144 @@ let currentAiBubble = null;
 let currentText = '';
 let currentThinkingEl = null;
 let unlisten = null;
-let hasToolCalls = false; // 当前会话是否有工具调用
+let hasToolCalls = false;
 
-// ─── 会话管理 ──────────────────────────────────
+// ─── 会话管理（通过 daemon API）──────────────────
 
-function sessionsLoad() {
+async function loadSessionsFromDaemon() {
   try {
-    const data = localStorage.getItem('atomcode_sessions');
-    state.sessions = data ? JSON.parse(data) : [];
-  } catch {
-    state.sessions = [];
+    const sessions = await window.atomcode.listSessions();
+    state.sessions = sessions || [];
+    renderSessionList();
+  } catch (err) {
+    console.error('Failed to load sessions:', err);
   }
-}
-
-function sessionsSave() {
-  localStorage.setItem('atomcode_sessions', JSON.stringify(state.sessions));
 }
 
 function activeSessionIdLoad() {
-  try {
-    const id = localStorage.getItem('atomcode_active_session');
-    return id || null;
-  } catch {
-    return null;
-  }
+  return localStorage.getItem('atomcode_active_session') || null;
 }
 
 function activeSessionIdSave(id) {
-  if (id) {
-    localStorage.setItem('atomcode_active_session', id);
-  } else {
-    localStorage.removeItem('atomcode_active_session');
-  }
+  if (id) localStorage.setItem('atomcode_active_session', id);
+  else localStorage.removeItem('atomcode_active_session');
 }
 
 function sessionCreate() {
+  // Daemon 管理会话，本地只需创建一个空占位
   const session = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-    title: '新对话',
+    name: '新对话',
     messages: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    message_count: 0,
+    _pending: true, // 标记为待创建（daemon 会在第一个 chat 后生成）
   };
-  state.sessions.push(session);
+  state.sessions.unshift(session);
   state.activeSessionId = session.id;
   state.messages = [];
   activeSessionIdSave(session.id);
-  sessionsSave();
   renderSessionList();
   clearChatUI();
   welcome.classList.remove('hidden');
   return session;
 }
 
-function sessionDelete(id) {
-  const idx = state.sessions.findIndex(s => s.id === id);
-  if (idx === -1) return;
-  state.sessions.splice(idx, 1);
+async function sessionDelete(id) {
+  // 通过 daemon API 删除
+  const session = state.sessions.find(s => s.id === id);
+  if (!session) return;
 
+  // 如果是 pending 会话，直接从本地删除
+  if (session._pending) {
+    state.sessions = state.sessions.filter(s => s.id !== id);
+    if (state.activeSessionId === id) {
+      if (state.sessions.length > 0) {
+        sessionSwitch(state.sessions[0].id);
+      } else {
+        sessionCreate();
+      }
+    }
+    renderSessionList();
+    return;
+  }
+
+  // 需要从 daemon 删除：先找 projectHash
+  // 从所有会话列表中查找
+  let projectHash = null;
+  try {
+    const allSessions = await window.atomcode.listSessions();
+    const found = allSessions.find(s => s.id === id);
+    if (found && found.project_hash) projectHash = found.project_hash;
+  } catch {}
+
+  if (projectHash) {
+    await window.atomcode.deleteSession(projectHash, id);
+  }
+
+  state.sessions = state.sessions.filter(s => s.id !== id);
   if (state.activeSessionId === id) {
-    // 如果删除的是当前会话，切换到另一个会话或创建新会话
     if (state.sessions.length > 0) {
       sessionSwitch(state.sessions[0].id);
     } else {
       sessionCreate();
     }
-  } else {
-    sessionsSave();
-    renderSessionList();
   }
+  renderSessionList();
 }
 
-function sessionSwitch(id) {
-  // 保存当前会话消息
+async function sessionSwitch(id) {
   sessionSaveCurrent();
-  // 切换到目标会话
   const session = state.sessions.find(s => s.id === id);
   if (!session) return;
+
   state.activeSessionId = id;
-  state.messages = session.messages;
   activeSessionIdSave(id);
+
+  // 如果是 daemon 管理的会话，尝试加载详情
+  if (!session._pending) {
+    try {
+      const allSessions = await window.atomcode.listSessions();
+      const found = allSessions.find(s => s.id === id);
+      if (found && found.project_hash) {
+        const detail = await getSessionDetail(found.project_hash, id);
+        if (detail && detail.messages) {
+          session.messages = detail.messages.map(m => ({
+            role: m.role,
+            content: m.content || '',
+          }));
+        }
+      }
+    } catch {}
+  }
+
+  state.messages = session.messages || [];
   renderMessages(state.messages);
   renderSessionList();
 }
 
+async function getSessionDetail(projectHash, id) {
+  try {
+    const sessions = await window.atomcode.listSessions();
+    const found = sessions.find(s => s.id === id);
+    if (found) return found;
+  } catch {}
+  return null;
+}
+
 function sessionSaveCurrent() {
+  // 更新本地缓存
   const session = state.sessions.find(s => s.id === state.activeSessionId);
   if (!session) return;
   session.messages = state.messages;
-  session.updatedAt = Date.now();
-
-  // 自动从第一条用户消息生成标题
-  if (session.title === '新对话') {
-    sessionUpdateTitle(session.id);
-  }
-
-  sessionsSave();
-}
-
-function sessionUpdateTitle(sessionId) {
-  const session = state.sessions.find(s => s.id === sessionId);
-  if (!session) return;
-  const firstUserMsg = session.messages.find(m => m.role === 'user');
-  if (firstUserMsg && firstUserMsg.content) {
-    session.title = firstUserMsg.content.substring(0, 30);
+  session.updated_at = Date.now();
+  // 自动命名
+  if (session.name === '新对话' || !session.name) {
+    const firstUserMsg = state.messages.find(m => m.role === 'user');
+    if (firstUserMsg && firstUserMsg.content) {
+      session.name = firstUserMsg.content.substring(0, 30);
+    }
   }
 }
 
@@ -148,7 +184,7 @@ function renderSessionList() {
 
     const titleSpan = document.createElement('span');
     titleSpan.className = 'session-title';
-    titleSpan.textContent = session.title;
+    titleSpan.textContent = session.name || '新对话';
 
     const delBtn = document.createElement('button');
     delBtn.className = 'session-delete';
@@ -175,14 +211,14 @@ function renderSessionList() {
 }
 
 function clearChatUI() {
-  const msgs = chatContainer.querySelectorAll('.msg, .tool-call, .tool-result');
+  const msgs = chatContainer.querySelectorAll('.msg, .tool-call, .tool-result, .artifact');
   msgs.forEach(el => el.remove());
   welcome.classList.add('hidden');
 }
 
 function renderMessages(messages) {
   clearChatUI();
-  if (messages.length === 0) {
+  if (!messages || messages.length === 0) {
     welcome.classList.remove('hidden');
     return;
   }
@@ -198,40 +234,98 @@ newSessionBtn.addEventListener('click', () => {
   sessionCreate();
 });
 
-// ─── 检查 atomcode ──────────────────────────────
+// ─── 检查 atomcode daemon ──────────────────────
 async function checkAtomcode() {
   try {
     const result = await window.atomcode.check();
     state.atomcodeAvailable = result.available;
-    if (result.available) {
-      atomcodeStatus.textContent = '✅ 可用';
+    state.daemonRunning = result.daemonRunning;
+    if (result.available && result.daemonRunning) {
+      atomcodeStatus.textContent = '✅ Daemon 就绪';
       atomcodeStatus.style.color = 'var(--success)';
-      atomcodePathEl.textContent = result.path;
+      atomcodePathEl.textContent = `127.0.0.1:${result.health ? '13456' : '?'}`;
       setStatus('就绪');
       sendBtn.disabled = false;
+    } else if (result.available) {
+      atomcodeStatus.textContent = '⏳ Daemon 启动中…';
+      atomcodeStatus.style.color = 'var(--warning)';
+      atomcodePathEl.textContent = '等待 daemon 就绪';
+      setStatus('⏳ 等待 daemon…');
+      sendBtn.disabled = true;
     } else {
-      atomcodeStatus.textContent = '❌ 未找到';
+      // 未安装或启动失败 — 显示详细诊断信息
+      const errMsg = result.daemonError || '';
+      const paths = result.searchPaths || {};
+
+      let details = '';
+      if (errMsg) {
+        details += `\n错误: ${errMsg}`;
+      }
+      details += `\n查找路径:`;
+      details += `\n  atomcode-daemon: ${paths.atomcodeDaemon || '未找到'}`;
+      details += `\n  atomcode CLI: ${paths.atomcodeCli || '未找到'}`;
+      details += `\n  cargo bin 目录: ${paths.cargoBinDir || '?'}`;
+      if (paths.atomcodeDaemon && paths.atomcodeDaemon !== 'atomcode-daemon' && !errMsg) {
+        // 找到了 daemon 二进制但启动超时
+        details += '\n\n✅ 已找到 atomcode-daemon 二进制，但启动超时';
+        details += '\n可能原因: 端口 13456 被占用 / daemon 启动报错';
+        details += '\n请在开发者工具 Console 中查看详细日志';
+      } else if (!errMsg) {
+        details += '\n💡 需要安装 atomcode-daemon：';
+        details += '\n   cargo install atomcode-daemon';
+        details += '\n\n或确保 atomcode 在 PATH 中：';
+        details += '\n   $env:Path += ";$env:USERPROFILE\\.cargo\\bin"';
+      }
+
+      atomcodeStatus.textContent = '❌ Daemon 不可用';
       atomcodeStatus.style.color = 'var(--error)';
-      atomcodePathEl.textContent = '请运行 `cargo install atomcode`';
-      setStatus('⚠️ atomcode 未安装', true);
+      atomcodePathEl.textContent = '';
+      atomcodePathEl.title = details;
+      setStatus('⚠️ atomcode 未就绪 — 鼠标悬停查看详情', true);
+
+      // 在设置面板中显示诊断信息
+      const existingDiag = document.getElementById('daemon-diagnostic');
+      if (existingDiag) existingDiag.remove();
+
+      const diag = document.createElement('div');
+      diag.id = 'daemon-diagnostic';
+      diag.className = 'settings-row';
+      diag.style.flexDirection = 'column';
+      diag.style.alignItems = 'flex-start';
+      diag.style.gap = '4px';
+      const label = document.createElement('label');
+      label.style.minWidth = 'auto';
+      label.textContent = '诊断';
+      const pre = document.createElement('pre');
+      pre.style.cssText = 'font-size:11px;color:var(--error);white-space:pre-wrap;margin:0;background:var(--bg);padding:8px;border-radius:4px;width:100%;';
+      pre.textContent = details;
+      diag.appendChild(label);
+      diag.appendChild(pre);
+      settingsPanel.appendChild(diag);
+
       sendBtn.disabled = true;
     }
   } catch (err) {
     atomcodeStatus.textContent = '❌ 检查失败';
     atomcodeStatus.style.color = 'var(--error)';
-    setStatus('❌ atomcode 检查失败', true);
+    setStatus('❌ daemon 检查失败', true);
   }
 }
 
 // ─── 初始化工作目录 ──────────────────────────────
 async function initCwd() {
   try {
-    state.cwd = await window.atomcode.getPath('home');
-    cwdInput.value = state.cwd;
+    // 优先从 daemon 获取
+    const project = await window.atomcode.getProject();
+    if (project && project.working_dir) {
+      state.cwd = project.working_dir;
+    } else {
+      state.cwd = await window.atomcode.getPath('home');
+    }
   } catch {
     state.cwd = 'C:\\';
-    cwdInput.value = state.cwd;
   }
+  cwdInput.value = state.cwd;
   cwdInput.addEventListener('change', () => {
     state.cwd = cwdInput.value.trim() || state.cwd;
   });
@@ -267,9 +361,14 @@ async function sendMessage() {
     sessionCreate();
   }
 
-  if (!state.atomcodeAvailable) {
-    addMessage('system', '⚠️ atomcode 未安装。请先运行: `cargo install atomcode`');
-    return;
+  if (!state.daemonRunning) {
+    addMessage('system', '⚠️ AtomCode daemon 未就绪。正在启动…');
+    // 尝试重新检查
+    await checkAtomcode();
+    if (!state.daemonRunning) {
+      addMessage('system', '❌ daemon 无法连接，请确认 atomcode 已正确安装');
+      return;
+    }
   }
 
   messageInput.value = '';
@@ -292,7 +391,7 @@ async function sendMessage() {
   try {
     await window.atomcode.query({
       sessionId: state.currentSessionId,
-      messages: state.messages,
+      message: text,
       cwd: state.cwd,
     });
   } catch (err) {
@@ -309,77 +408,181 @@ function setupEventListener() {
 
   unlisten = window.atomcode.onEvent((event) => {
     const { sessionId, type } = event;
+
+    // daemon_status 是全局事件，不由 sessionId 过滤
+    if (type === 'daemon_status') {
+      state.daemonRunning = event.running;
+      if (event.running) {
+        atomcodeStatus.textContent = '✅ Daemon 就绪';
+        atomcodeStatus.style.color = 'var(--success)';
+        setStatus('就绪');
+        sendBtn.disabled = false;
+        // 加载会话列表
+        loadSessionsFromDaemon();
+      } else {
+        atomcodeStatus.textContent = '❌ Daemon 断开';
+        atomcodeStatus.style.color = 'var(--error)';
+      }
+      return;
+    }
+
+    // 以下事件按 sessionId 过滤
     if (sessionId !== state.currentSessionId) return;
 
     switch (type) {
 
-      case 'response_chunk':
-        currentText += event.text;
-        if (!currentAiBubble) {
-          removeTyping();
-          currentAiBubble = createAiBubble();
+      case 'text':
+      case 'reasoning': {
+        if (type === 'reasoning') {
+          // reasoning/thinking 内容
+          if (!currentThinkingEl) {
+            currentThinkingEl = document.createElement('div');
+            currentThinkingEl.className = 'msg ai';
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.style.fontSize = '12px';
+            bubble.style.color = 'var(--text-dim)';
+            bubble.style.fontStyle = 'italic';
+            currentThinkingEl.appendChild(bubble);
+            chatContainer.appendChild(currentThinkingEl);
+          }
+          currentThinkingEl.querySelector('.bubble').textContent = `🤔 ${event.content}`;
+          scrollToBottom();
+        } else {
+          // assistant text delta
+          currentText += event.content;
+          if (!currentAiBubble) {
+            removeTyping();
+            currentAiBubble = createAiBubble();
+          }
+          currentAiBubble.querySelector('.bubble').innerHTML = renderMarkdown(currentText);
+          scrollToBottom();
         }
-        currentAiBubble.querySelector('.bubble').innerHTML = renderMarkdown(currentText);
-        scrollToBottom();
         break;
+      }
 
-      case 'thinking':
-        if (!currentThinkingEl) {
-          currentThinkingEl = document.createElement('div');
-          currentThinkingEl.className = 'msg ai';
-          const bubble = document.createElement('div');
-          bubble.className = 'bubble';
-          bubble.style.fontSize = '12px';
-          bubble.style.color = 'var(--text-dim)';
-          bubble.style.fontStyle = 'italic';
-          currentThinkingEl.appendChild(bubble);
-          chatContainer.appendChild(currentThinkingEl);
+      case 'tool_batch': {
+        // 该轮所有工具调用
+        if (event.calls && event.calls.length > 0) {
+          hasToolCalls = true;
+          for (const call of event.calls) {
+            addToolCallUI(call.name, call.arguments);
+          }
         }
-        currentThinkingEl.querySelector('.bubble').textContent = `🤔 ${event.text}`;
-        scrollToBottom();
         break;
+      }
 
-      case 'tool_streaming':
-        setStatus(`执行工具: ${event.name}`);
-        break;
-
-      case 'tool_call':
+      case 'tool_start': {
         hasToolCalls = true;
-        addToolCallUI(event.name, event.args);
+        setStatus(`执行工具: ${event.name}`);
+        // 如果 tool_batch 没覆盖到这步
         break;
+      }
 
-      case 'tool_result':
-        addToolResultUI(event.name, event.text, event.status === 'ok');
+      case 'tool_result': {
+        addToolResultUI(event.name, event.output, event.success, event.duration_ms);
         break;
+      }
 
-      case 'done':
-        state.messages.push({ role: 'assistant', content: currentText });
-        setStatus(`完成 (${event.duration}s, ${event.turns} 轮, ${event.toolCalls} 工具调用)`);
+      case 'artifact_start': {
+        // 代码块 / HTML / SVG 开始
+        const artifactDiv = document.createElement('div');
+        artifactDiv.className = 'artifact';
+        artifactDiv.dataset.artifactId = event.id;
+        artifactDiv.dataset.artifactType = event.artifact_type;
+        artifactDiv.innerHTML = `
+          <div class="artifact-header">📄 ${event.title || event.artifact_type || '代码'}</div>
+          <pre class="artifact-code"><code></code></pre>
+        `;
+        if (currentAiBubble) {
+          chatContainer.insertBefore(artifactDiv, currentAiBubble);
+        } else {
+          chatContainer.appendChild(artifactDiv);
+        }
+        scrollToBottom();
+        break;
+      }
+
+      case 'artifact_content': {
+        // artifact 内容增量
+        const artifactDiv = chatContainer.querySelector(`[data-artifact-id="${event.id}"]`);
+        if (artifactDiv) {
+          const codeEl = artifactDiv.querySelector('.artifact-code code');
+          if (codeEl) {
+            codeEl.textContent += event.content;
+          }
+        }
+        break;
+      }
+
+      case 'artifact_end': {
+        // artifact 结束，可以做语法高亮
+        break;
+      }
+
+      case 'tokens': {
+        setStatus(`Token: ${event.prompt} → ${event.completion} (总计 ${event.total})`);
+        break;
+      }
+
+      case 'done': {
+        // 聊天完成
+        if (currentText.trim()) {
+          state.messages.push({ role: 'assistant', content: currentText });
+        }
+
+        // 更新 session 信息
+        if (event.session_id) {
+          const session = state.sessions.find(s => s.id === state.activeSessionId);
+          if (session) {
+            session._pending = false;
+            session.name = session.name || '新对话';
+          }
+        }
+
+        setStatus(`完成 (${event.tool_calls || 0} 工具调用, ${event.tokens || 0} tokens)`);
         sessionSaveCurrent();
-        renderSessionList();
+        // 刷新会话列表
+        loadSessionsFromDaemon();
         resetSession();
         break;
+      }
 
-      case 'close':
+      case 'stopped': {
+        // 用户取消
+        if (currentText.trim()) {
+          state.messages.push({ role: 'assistant', content: currentText });
+        }
+        sessionSaveCurrent();
+        loadSessionsFromDaemon();
+        resetSession();
+        setStatus('已取消');
+        break;
+      }
+
+      case 'close': {
+        // 连接关闭（未收到 done/stopped/error）
         if (state.isLoading) {
           if (currentText.trim()) {
             state.messages.push({ role: 'assistant', content: currentText });
           }
           sessionSaveCurrent();
-          renderSessionList();
+          loadSessionsFromDaemon();
           resetSession();
         }
         break;
+      }
 
-      case 'error':
-        addMessage('system', `❌ ${event.error}`);
+      case 'error': {
+        addMessage('system', `❌ ${event.message}`);
         if (currentText.trim()) {
           state.messages.push({ role: 'assistant', content: currentText });
         }
         sessionSaveCurrent();
-        renderSessionList();
+        loadSessionsFromDaemon();
         resetSession();
         break;
+      }
     }
   });
 }
@@ -457,9 +660,16 @@ function removeTyping() {
 function addToolCallUI(name, args) {
   const div = document.createElement('div');
   div.className = 'tool-call';
+  let argsDisplay = '';
+  if (typeof args === 'string') {
+    try { argsDisplay = JSON.stringify(JSON.parse(args), null, 2); }
+    catch { argsDisplay = args; }
+  } else if (args) {
+    argsDisplay = JSON.stringify(args, null, 2);
+  }
   div.innerHTML = `
     <div class="tc-header">🔧 ${name}</div>
-    <div class="tc-args">${escapeHtml(JSON.stringify(args, null, 2))}</div>
+    <div class="tc-args">${escapeHtml(argsDisplay)}</div>
   `;
   if (currentAiBubble) {
     chatContainer.insertBefore(div, currentAiBubble);
@@ -469,12 +679,15 @@ function addToolCallUI(name, args) {
   scrollToBottom();
 }
 
-function addToolResultUI(toolName, content, success) {
+function addToolResultUI(toolName, content, success, durationMs) {
   const div = document.createElement('div');
   div.className = success ? 'tool-result' : 'tool-error';
   const displayText = content ? content.substring(0, 2000) : '(无输出)';
-  const suffix = content && content.length > 2000 ? '...（截断）' : '';
-  div.textContent = `[${toolName}] ${displayText}${suffix}`;
+  const suffix = content && content.length > 2000 ? '…（截断）' : '';
+  const duration = durationMs ? ` (${(durationMs / 1000).toFixed(1)}s)` : '';
+  div.textContent = success
+    ? `[${toolName}]${duration} ${displayText}${suffix}`
+    : `[${toolName}] ❌ ${displayText}${suffix}`;
   if (currentAiBubble) {
     chatContainer.insertBefore(div, currentAiBubble);
   } else {
@@ -523,7 +736,7 @@ document.addEventListener('keydown', (e) => {
       state.messages.push({ role: 'assistant', content: currentText });
     }
     sessionSaveCurrent();
-    renderSessionList();
+    loadSessionsFromDaemon();
     resetSession();
     setStatus('已取消');
   }
@@ -535,21 +748,41 @@ async function init() {
   await initCwd();
   await checkAtomcode();
 
-  // 初始化会话管理
-  sessionsLoad();
+  // 如果 daemon 已就绪，加载会话列表；否则用本地 fallback
+  if (state.daemonRunning) {
+    await loadSessionsFromDaemon();
+  }
+
   const savedActiveId = activeSessionIdLoad();
   if (savedActiveId && state.sessions.some(s => s.id === savedActiveId)) {
     state.activeSessionId = savedActiveId;
     const session = state.sessions.find(s => s.id === savedActiveId);
-    state.messages = session.messages;
-    renderMessages(state.messages);
+    if (session && session.messages) {
+      state.messages = session.messages;
+      renderMessages(state.messages);
+    }
   } else {
-    // 没有有效会话，创建一个新会话
     sessionCreate();
   }
   renderSessionList();
 
-  console.log('AtomCode GUI — 本地子进程模式');
+  // 轮询 daemon 状态（如果还没就绪）
+  if (!state.daemonRunning) {
+    const pollInterval = setInterval(async () => {
+      const result = await window.atomcode.check();
+      if (result.daemonRunning) {
+        state.daemonRunning = true;
+        atomcodeStatus.textContent = '✅ Daemon 就绪';
+        atomcodeStatus.style.color = 'var(--success)';
+        setStatus('就绪');
+        sendBtn.disabled = false;
+        await loadSessionsFromDaemon();
+        clearInterval(pollInterval);
+      }
+    }, 2000);
+  }
+
+  console.log('AtomCode GUI — Daemon SSE 模式');
   console.log(`Platform: ${window.atomcode.platform}`);
 }
 

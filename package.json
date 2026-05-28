@@ -1,6 +1,6 @@
 {
   "name": "atomcode-gui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AtomCode GUI - 100% AI-developed open-source desktop client",
   "main": "main.js",
   "scripts": {
